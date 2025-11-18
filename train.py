@@ -125,16 +125,14 @@ def main():
     
     print(f"\nModel parameters (Trainable): {sum(p.numel() for p in model.parameters() if p.requires_grad):,}")
     
-    # --- [차등 학습률 (수정 없음)] ---
-    bert_params = model.text_encoder.bert.parameters()
-    
+    lora_params = model.text_encoder.bert.parameters()
     # ms_encoder.parameters()가 새 Transformer의 파라미터를 가져옴
     encoder_params = list(model.ms_encoder.parameters()) + \
                      list(model.text_encoder.projection.parameters()) + \
                      [model.logit_scale] 
     
     param_groups = [
-        {'params': bert_params, 'lr': config.LR_BERT},
+        {'params': lora_params, 'lr': config.LR_LORA},
         {'params': encoder_params, 'lr': config.LR_ENCODER}
     ]
 
@@ -146,7 +144,7 @@ def main():
     scheduler = optim.lr_scheduler.CosineAnnealingLR(
         optimizer,
         T_max=config.NUM_EPOCHS,
-        eta_min=config.LR_BERT * 0.1 
+        eta_min=config.LR_LORA * 0.1 
     )
     
     scaler = GradScaler('cuda')

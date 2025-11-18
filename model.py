@@ -8,6 +8,7 @@ import torch.nn.functional as F
 from transformers import AutoModel
 import config
 import numpy as np
+from peft import get_peft_model, LoraConfig, TaskType
 
 
 class MSEncoder(nn.Module):
@@ -98,11 +99,26 @@ class TextEncoder(nn.Module):
     """
     def __init__(self, model_name, embedding_dim):
         super().__init__()
-        self.bert = AutoModel.from_pretrained(model_name)
+        self.bert = AutoModel.from_pretrained(
+            model_name,
+            use_safetensors=True
+            )
         
         if config.TEXT_ENCODER['freeze_bert']:
             for param in self.bert.parameters():
                 param.requires_grad = False
+                
+                
+        lora_config = LoraConfig(
+            task_type=TaskType.FEATURE_EXTRACTION, # We are just getting embeddings
+            r=config.LORA['r'],  # Rank (hyperparameter, 8 or 16 is common)
+            lora_alpha=config.LORA['lora_alpha'], # (hyperparameter, often 2*r)
+            lora_dropout=config.LORA['lora_dropout'],
+            target_modules=config.LORA['target_modules'] # Apply to attention layers
+        )
+        self.bert = get_peft_model(self.bert, lora_config)
+        print("\nTextEncoder (LoRA) Trainable Parameters:")
+        self.bert.print_trainable_parameters()
         
         bert_dim = self.bert.config.hidden_size
         

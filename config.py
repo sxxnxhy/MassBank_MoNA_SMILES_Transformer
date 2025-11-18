@@ -11,10 +11,6 @@ MONA_FILE = "./data_preprocess/mona_30peaks_1064635.parquet"
 TRAIN_TEST_SPLIT_RATIO = 0.8  
 RANDOM_SEED = 42
 
-# --- Preprocessing (Normalization Constants) ---
-# (interpolate 대신 m/z 값 정규화에 사용)
-MS_X_MIN = 29.0           
-MS_X_MAX = 1421.0
 # (이전 로그 99백분위수 655, 필터 1000을 기준으로 설정)
 MAX_PEAK_SEQ_LEN = 30    # 스펙트럼 당 최대 피크 (토큰) 시퀀스 길이
 
@@ -40,20 +36,27 @@ TEXT_ENCODER = {
     'freeze_bert': False
 }
 
-# --- Training (CLIP-style) ---
-BATCH_SIZE = 128 # (모델이 복잡해졌으므로 VRAM에 맞게 조절, 512->256)
+LORA = {
+    'r': 16,  # Rank (hyperparameter, 8 or 16 is common)
+    'lora_alpha' : 32, # (hyperparameter, often 2*r)
+    'lora_dropout': 0.1,
+    'target_modules': ["query", "key", "value"] # Apply to attention layers
+}
+
+# Training
+BATCH_SIZE = 256
 NUM_EPOCHS = 500 
 WEIGHT_DECAY = 1e-2 
 
-# --- Differential Learning Rates ---
-LR_BERT = 1e-5
-LR_ENCODER = 1e-4 # (새 Transformer Encoder용 LR)
+# Learning Rates 
+LR_LORA = 1e-4
+LR_ENCODER = 1e-4 
 
-# --- Logging ---
+# Logging
 CHECKPOINT_DIR = './models_massbank_v4_PeakTransformer'
 LOG_DIR = './logs_massbank_v4_PeakTransformer'
 
-# --- Device ---
+# Device
 DEVICE = 'cuda:0'
 
 

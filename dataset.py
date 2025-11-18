@@ -106,7 +106,7 @@ def prepare_dataloaders():
     print("Loading datasets (CLEANED: Centroid-Only)...")
     try:
         df_massbank = pd.read_parquet(config.MASSBANK_FILE)
-        df_mona = pd.read_parquet(config.MONA_FILE)
+        # df_mona = pd.read_parquet(config.MONA_FILE)
     except FileNotFoundError as e:
         print(f"Error: {e}")
         print("Please run the MODIFIED create_parquet scripts with MAX_PEAK_COUNT filter.")
@@ -116,7 +116,7 @@ def prepare_dataloaders():
         return None, None
         
     df_massbank = df_massbank.dropna(subset=['smiles'])
-    df_mona = df_mona.dropna(subset=['smiles'])
+    # df_mona = df_mona.dropna(subset=['smiles'])
     
     print("Performing Zero-Shot split on MassBank (for clean test set)...")
     unique_smiles_massbank = df_massbank['smiles'].unique()
@@ -130,23 +130,25 @@ def prepare_dataloaders():
     
     train_massbank_df = df_massbank[df_massbank['smiles'].isin(train_smiles_massbank)].reset_index(drop=True)
     test_massbank_df = df_massbank[df_massbank['smiles'].isin(test_smiles_massbank)].reset_index(drop=True)
-    df_mona = df_mona.reset_index(drop=True) # MoNA는 모두 훈련용
+    # df_mona = df_mona.reset_index(drop=True) # MoNA는 모두 훈련용
 
     tokenizer = get_tokenizer()
     
     train_dataset_massbank = MassBankDataset(train_massbank_df, tokenizer, is_train=True)
-    train_dataset_mona = MassBankDataset(df_mona, tokenizer, is_train=True)
+    # train_dataset_mona = MassBankDataset(df_mona, tokenizer, is_train=True)
     
-    train_dataset = ConcatDataset([train_dataset_massbank, train_dataset_mona])
+
+    train_dataset = ConcatDataset([train_dataset_massbank]) # Removed train_dataset_mona
+    #train_dataset = ConcatDataset([train_dataset_massbank, train_dataset_mona])
     
     test_dataset = MassBankDataset(test_massbank_df, tokenizer, is_train=False)
     
     len_massbank_train = len(train_dataset_massbank)
-    len_mona_train = len(train_dataset_mona)
+    # len_mona_train = len(train_dataset_mona)
     
     print("-" * 80)
     print(f"Total Train Spectra (MassBank): {len_massbank_train:,} ({(len_massbank_train / len(train_dataset))*100:.1f}%)")
-    print(f"Total Train Spectra (MoNA): {len_mona_train:,} ({(len_mona_train / len(train_dataset))*100:.1f}%)")
+    # print(f"Total Train Spectra (MoNA): {len_mona_train:,} ({(len_mona_train / len(train_dataset))*100:.1f}%)")
     print(f"Total Train Spectra (Combined): {len(train_dataset):,}")
     print(f"Total Test Spectra (MassBank ZSR): {len(test_dataset):,}")
     print("-" * 80)
