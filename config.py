@@ -1,24 +1,20 @@
-"""
-Configuration for MassBank Zero-Shot Retrieval (ZSR)
-(MODIFIED for "Path A": Transformer-on-Peaks)
-"""
 
-# --- Data Source ---
+# Data Source
 MASSBANK_FILE = "./data_preprocess/massbank_300peaks.parquet"
 # MASSBANK_FILE = "./data_preprocess/massbank_num_peak_limit_30.parquet"
 
 MONA_FILE = "./data_preprocess/mona_30peaks_1064635.parquet"
 
-# --- Zero-Shot Setup ---
+# Zero-Shot Setup
 TRAIN_TEST_SPLIT_RATIO = 0.8  
 RANDOM_SEED = 42
 
 MAX_PEAK_SEQ_LEN = 300    # 스펙트럼 당 최대 피크 (토큰) 시퀀스 길이
 
-# --- Model Architecture ---
+# Model Architecture
 EMBEDDING_DIM = 768       # 공유 임베딩 차원 (BERT와 일치)
 
-# --- (NEW) MS Encoder (Transformer-on-Peaks) ---
+
 MS_ENCODER = {
     # Gaussian Fourier Projection Dimension (Internal)
     # This projects scalar m/z -> vector of size 'fourier_dim'
@@ -33,7 +29,7 @@ MS_ENCODER = {
 # loss temperature
 TEMPERATURE = 0.07
 
-# Text Encoder (ChemBERTa)
+# Text Encoder
 TEXT_ENCODER = {
     'model_name': 'seyonec/PubChem10M_SMILES_BPE_450k',
     'max_length': 365,  

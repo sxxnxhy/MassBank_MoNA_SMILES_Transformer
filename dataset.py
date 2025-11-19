@@ -8,14 +8,12 @@ from tqdm import tqdm
 from rdkit import Chem
 
 def get_tokenizer():
-    """Initializes and returns the tokenizer."""
     return AutoTokenizer.from_pretrained(
             config.TEXT_ENCODER['model_name']
         )
 
 class MassBankDataset(Dataset):
     """
-    (MODIFIED)
     - Intensity: SQRT normalization (Handles Power Law)
     - m/z: Log transform (Handles Scale)
     """
@@ -47,7 +45,7 @@ class MassBankDataset(Dataset):
 
         processed_peaks = []
         
-        # --- [FIX 2: Intensity Preprocessing (Power Law)] ---
+        # Intensity Preprocessing (Power Law)
         if peak_list:
             # 1. Extract intensities
             intensities = np.array([p[1] for p in peak_list])
@@ -68,7 +66,7 @@ class MassBankDataset(Dataset):
             for mz, inten in zip(log_mzs, norm_intensities):
                 processed_peaks.append((mz, inten))
         
-        # --- 3. Padding / Sorting ---
+        # Padding / Sorting
         num_peaks = len(processed_peaks)
         peak_sequence = torch.zeros(self.MAX_LEN, 2, dtype=torch.float32)
         peak_mask = torch.zeros(self.MAX_LEN, dtype=torch.bool)
@@ -98,7 +96,6 @@ class MassBankDataset(Dataset):
 
 def prepare_dataloaders():
     """
-    (MODIFIED)
     - Fixes Data Leakage by splitting on InChIKey (First Block)
     """
     print("Loading datasets...")
@@ -112,7 +109,7 @@ def prepare_dataloaders():
     df_massbank = df_massbank.dropna(subset=['smiles'])
     df_mona = df_mona.dropna(subset=['smiles'])
     
-    # --- [FIX 3: InChIKey Splitting to prevent Leakage] ---
+    # InChIKey Splitting to prevent Leakage
     print("Generating InChIKeys for MassBank split (Preventing Stereoisomer Leakage)...")
     
     # Helper to get first block
@@ -174,8 +171,6 @@ def prepare_dataloaders():
     # print(f"Total Train Spectra (MoNA): {len_mona_train:,} ({(len_mona_train / len(train_dataset))*100:.1f}%)")
     print(f"Total Train Spectra (Combined): {len(train_dataset):,}")
     print(f"Total Test Spectra (MassBank ZSR): {len(test_dataset):,}")
-    print("-" * 80)
-    # print("NOTE: Training *without* WeightedRandomSampler first.")
     print("-" * 80)
     
     train_loader = DataLoader(

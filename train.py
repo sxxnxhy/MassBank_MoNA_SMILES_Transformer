@@ -1,7 +1,4 @@
-"""
-Training script for MassBank CLIP-style Zero-Shot Retrieval (ZSR).
-(UPDATED: Re-enabled AMP/FP16 for efficiency, now that inputs are stable)
-"""
+
 import os
 # Disable tokenizer parallelism to prevent deadlocks with DataLoader
 os.environ['TOKENIZERS_PARALLELISM'] = 'false'
@@ -40,7 +37,7 @@ def validate_zero_shot_retrieval(model, val_loader, device):
         input_ids = batch['input_ids'].to(device)
         attention_mask = batch['attention_mask'].to(device)
         
-        # --- [RESTORED] Use autocast for faster inference ---
+        # Use autocast for faster inference
         with autocast(device_type='cuda', dtype=torch.float16):
             spec_embeds = model.ms_encoder(peak_sequence, peak_mask)
             text_embeds = model.text_encoder(input_ids, attention_mask)
@@ -84,11 +81,11 @@ def train_one_epoch(model, train_loader, optimizer, scheduler, scaler, device, e
         
         optimizer.zero_grad()
         
-        # --- [RESTORED] Mixed Precision Forward Pass ---
+        # Mixed Precision Forward Pass
         with autocast(device_type='cuda', dtype=torch.float16): 
             loss = model(peak_sequence, peak_mask, input_ids, attention_mask)
         
-        # --- [RESTORED] Scaled Backward Pass ---
+        # Scaled Backward Pass
         scaler.scale(loss).backward()
         
         # Unscale before clipping
@@ -134,7 +131,7 @@ def main():
     # Print LoRA parameters to confirm they are active
     model.text_encoder.bert.print_trainable_parameters()
     
-    # --- Differential Learning Rates ---
+    # Differential Learning Rates
     lora_params = model.text_encoder.bert.parameters()
     encoder_params = list(model.ms_encoder.parameters()) + \
                      list(model.text_encoder.projection.parameters()) + \
@@ -156,7 +153,7 @@ def main():
         eta_min=config.LR_ENCODER * 0.1 
     )
     
-    # --- [RESTORED] Initialize GradScaler ---
+    # Initialize GradScaler
     scaler = GradScaler()
     writer = SummaryWriter(config.LOG_DIR)
     

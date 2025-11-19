@@ -1,7 +1,4 @@
-"""
-Model file for MassBank CLIP-style Zero-Shot Retrieval (ZSR).
-(MODIFIED for "Path A": Transformer-on-Peaks)
-"""
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -12,16 +9,12 @@ from peft import get_peft_model, LoraConfig, TaskType
 import math
 
 class GaussianFourierProjection(nn.Module):
-    """
-    Projects scalar m/z values into high-dimensional space using 
-    random Gaussian frequencies (Tancik et al., NeurIPS 2020).
-    This enables the MLP to learn high-frequency functions (fine mass differences).
-    """
     def __init__(self, embed_dim, scale=30.0):
         super().__init__()
         # Random B matrix (fixed, not learnable)
         # scale controls the frequency spectrum. Higher scale = higher freq sensitivity.
         self.B = nn.Parameter(torch.randn(1, embed_dim // 2) * scale, requires_grad=False)
+        # B is a matrix of random numbers sampled from a Gaussian distribution (scale = 30.0).
 
     def forward(self, x):
         # x: [Batch, Seq, 1]
@@ -32,7 +25,6 @@ class GaussianFourierProjection(nn.Module):
 
 class MSEncoder(nn.Module):
     """
-    Physics-Informed Transformer.
     Input: (m/z, intensity) pairs.
     Architecture:
       1. m/z -> Fourier Projection -> MLP
@@ -45,7 +37,7 @@ class MSEncoder(nn.Module):
         d_model = encoder_config['d_model']
         fourier_dim = encoder_config['fourier_dim']
         
-        # --- 1. m/z Pathway (Where?) ---
+        # m/z Pathway (Where?) 
         self.mz_fourier = GaussianFourierProjection(fourier_dim, scale=30.0)
         self.mz_mlp = nn.Sequential(
             nn.Linear(fourier_dim, d_model),
@@ -53,21 +45,21 @@ class MSEncoder(nn.Module):
             nn.Linear(d_model, d_model)
         )
         
-        # --- 2. Intensity Pathway (How much?) ---
+        # Intensity Pathway (How much?)
         self.int_mlp = nn.Sequential(
             nn.Linear(1, d_model),
             nn.GELU(),
             nn.Linear(d_model, d_model)
         )
         
-        # --- 3. Fusion Layer (Concatenation Strategy) ---
+        # Fusion Layer (Concatenation Strategy)
         # Takes [mz_emb; int_emb] -> Fuses to [d_model]
         self.fusion = nn.Sequential(
             nn.Linear(d_model * 2, d_model),
             nn.LayerNorm(d_model)
         )
         
-        # --- 4. Transformer ---
+        # Transformer 
         self.cls_token = nn.Parameter(torch.zeros(1, 1, d_model))
         
         transformer_layer = nn.TransformerEncoderLayer(
@@ -83,7 +75,7 @@ class MSEncoder(nn.Module):
             num_layers=encoder_config['n_layers']
         )
         
-        # --- 5. Projection ---
+        # Projection head
         self.projection = nn.Sequential(
             nn.Linear(d_model, embedding_dim * 2),
             nn.LayerNorm(embedding_dim * 2),
@@ -128,9 +120,6 @@ class MSEncoder(nn.Module):
         return F.normalize(projected, p=2, dim=1)
 
 class TextEncoder(nn.Module):
-    """
-    (수정 없음 - 원본과 동일)
-    """
     def __init__(self, model_name, embedding_dim):
         super().__init__()
         self.bert = AutoModel.from_pretrained(
@@ -177,10 +166,7 @@ class TextEncoder(nn.Module):
         return x
 
 class CLIPModel(nn.Module):
-    """
-    (MODIFIED)
-    MS Encoder를 새 ViT 모델로 교체
-    """
+    
     def __init__(self):
         super().__init__()
         self.ms_encoder = MSEncoder(config.MS_ENCODER, config.EMBEDDING_DIM)
@@ -191,11 +177,11 @@ class CLIPModel(nn.Module):
         self.logit_scale = nn.Parameter(torch.ones([]) * np.log(1 / config.TEMPERATURE))
 
     def forward(self, peak_sequence, peak_mask, input_ids, attention_mask):
-        # --- [수정] peak_sequence, peak_mask를 ms_encoder로 전달 ---
+        # peak_sequence, peak_mask를 ms_encoder로 전달
         spec_embeds = self.ms_encoder(peak_sequence, peak_mask)
         text_embeds = self.text_encoder(input_ids, attention_mask)
         
-        # --- (이하 Loss 계산은 동일) ---
+        # Loss 계산
         batch_size = spec_embeds.shape[0]
         logits_per_spec = (spec_embeds @ text_embeds.T) * self.logit_scale.exp()
         logits_per_text = logits_per_spec.T
