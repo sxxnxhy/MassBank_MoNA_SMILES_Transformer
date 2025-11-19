@@ -5,6 +5,7 @@ from torch.utils.data import Dataset, DataLoader, ConcatDataset
 from transformers import AutoTokenizer
 import config
 from tqdm import tqdm
+from rdkit import Chem
 
 def get_tokenizer():
     """Initializes and returns the tokenizer."""
@@ -14,18 +15,14 @@ def get_tokenizer():
 
 class MassBankDataset(Dataset):
     """
-    (CORRECTED "Path A")
-    - m/z: 로그 변환 (log(mz))
-    - intensity: 로컬 정규화 (norm_int)
-    - 버그 수정 (np.ndarray -> list)
+    (MODIFIED)
+    - Intensity: SQRT normalization (Handles Power Law)
+    - m/z: Log transform (Handles Scale)
     """
     def __init__(self, df, tokenizer, is_train=False): 
         self.df = df
         self.tokenizer = tokenizer
         self.is_train = is_train
-        
-        # --- (REMOVED) m/z min/max 정규화 삭제 ---
-        
         self.MAX_LEN = config.MAX_PEAK_SEQ_LEN
 
     def __len__(self):
@@ -33,8 +30,6 @@ class MassBankDataset(Dataset):
 
     def __getitem__(self, idx):
         row = self.df.iloc[idx]
-        
-        # --- 1. Text (SMILES) ---
         smiles = row.get('smiles')
         text_prompt = f"{smiles}"
         
@@ -46,52 +41,56 @@ class MassBankDataset(Dataset):
             return_tensors='pt'
         )
         
-        # --- 2. Spectrum (Peak Sequence) ---
         peak_list = row['peaks'] 
-        
-        # [BUG FIX 1] Parquet의 ndarray(object)를 Python list로 변환
         if isinstance(peak_list, np.ndarray):
             peak_list = peak_list.tolist()
 
         processed_peaks = []
         
-        # --- [Intensity 정규화 (Local)] ---
+        # --- [FIX 2: Intensity Preprocessing (Power Law)] ---
         if peak_list:
-            intensities = [p[1] for p in peak_list]
-            max_int = max(intensities)
-            if max_int < 1e-10: max_int = 1.0 # 0으로 나누기 방지
-        else:
-            max_int = 1.0
-
-        for mz, intensity in peak_list:
-            # --- [m/z 변환: Log] ---
-            # 0 또는 음수 m/z 방지 (log(1) = 0)
-            log_mz = np.log(mz + 1.0) 
+            # 1. Extract intensities
+            intensities = np.array([p[1] for p in peak_list])
+            # 2. Apply Square Root (Boosts small diagnostic peaks)
+            #    e.g., 1% peak (0.01) becomes 10% (0.1)
+            root_intensities = np.sqrt(intensities)
+            # 3. Max Scaling
+            max_int = root_intensities.max() if len(root_intensities) > 0 else 1.0
+            if max_int < 1e-9: max_int = 1.0
+            norm_intensities = root_intensities / max_int
             
-            # --- [Intensity 정규화 (Local)] ---
-            norm_int = intensity / max_int
+            # Extract m/z
+            mzs = np.array([p[0] for p in peak_list])
+            # Log transform m/z for numerical stability
+            log_mzs = np.log(mzs + 1.0)
             
-            processed_peaks.append((log_mz, norm_int))
-            
-        # --- 3. Padding / Truncation ---
-        num_peaks = len(processed_peaks)
+            # Combine
+            for mz, inten in zip(log_mzs, norm_intensities):
+                processed_peaks.append((mz, inten))
         
+        # --- 3. Padding / Sorting ---
+        num_peaks = len(processed_peaks)
         peak_sequence = torch.zeros(self.MAX_LEN, 2, dtype=torch.float32)
         peak_mask = torch.zeros(self.MAX_LEN, dtype=torch.bool)
 
         if num_peaks > 0:
-            # [BUG FIX 2] Intensity가 높은 순으로 정렬 후 자르기
             if num_peaks > self.MAX_LEN:
-                processed_peaks.sort(key=lambda p: p[1], reverse=True) # p[1] = norm_int
+                # Sort by intensity (descending) and truncate
+                processed_peaks.sort(key=lambda p: p[1], reverse=True)
                 num_peaks = self.MAX_LEN
                 processed_peaks = processed_peaks[:num_peaks]
+            
+            # Sort by m/z for the Transformer (Positional consistency)
+            # Although Fourier Features handle random order, sorting helps the attention mechanism 
+            # learn "local" spectral features (like isotopic clusters)
+            processed_peaks.sort(key=lambda p: p[0])
             
             peak_sequence[:num_peaks] = torch.tensor(processed_peaks, dtype=torch.float32)
             peak_mask[:num_peaks] = True
         
         return {
-            'peak_sequence': peak_sequence,    # [700, 2] (log_mz, norm_int)
-            'peak_mask': peak_mask,            # [700]
+            'peak_sequence': peak_sequence,
+            'peak_mask': peak_mask,
             'input_ids': tokenized_text['input_ids'].squeeze(0),
             'attention_mask': tokenized_text['attention_mask'].squeeze(0)
         }
@@ -99,39 +98,63 @@ class MassBankDataset(Dataset):
 
 def prepare_dataloaders():
     """
-    (MODIFIED for "Path A")
-    - 깨끗한 MassBank와 MoNA Parquet 로드
+    (MODIFIED)
+    - Fixes Data Leakage by splitting on InChIKey (First Block)
     """
-    
-    print("Loading datasets (CLEANED: Centroid-Only)...")
+    print("Loading datasets...")
     try:
         df_massbank = pd.read_parquet(config.MASSBANK_FILE)
-        # df_mona = pd.read_parquet(config.MONA_FILE)
+        df_mona = pd.read_parquet(config.MONA_FILE)
     except FileNotFoundError as e:
         print(f"Error: {e}")
-        print("Please run the MODIFIED create_parquet scripts with MAX_PEAK_COUNT filter.")
-        return None, None
-    except AttributeError:
-        print("Error: config.py에 MASSBANK_FILE 또는 MONA_FILE 변수가 없습니다.")
         return None, None
         
     df_massbank = df_massbank.dropna(subset=['smiles'])
-    # df_mona = df_mona.dropna(subset=['smiles'])
+    df_mona = df_mona.dropna(subset=['smiles'])
     
-    print("Performing Zero-Shot split on MassBank (for clean test set)...")
-    unique_smiles_massbank = df_massbank['smiles'].unique()
+    # --- [FIX 3: InChIKey Splitting to prevent Leakage] ---
+    print("Generating InChIKeys for MassBank split (Preventing Stereoisomer Leakage)...")
     
-    np.random.seed(config.RANDOM_SEED)
-    np.random.shuffle(unique_smiles_massbank)
-    
-    split_idx = int(len(unique_smiles_massbank) * config.TRAIN_TEST_SPLIT_RATIO)
-    train_smiles_massbank = set(unique_smiles_massbank[:split_idx])
-    test_smiles_massbank = set(unique_smiles_massbank[split_idx:])
-    
-    train_massbank_df = df_massbank[df_massbank['smiles'].isin(train_smiles_massbank)].reset_index(drop=True)
-    test_massbank_df = df_massbank[df_massbank['smiles'].isin(test_smiles_massbank)].reset_index(drop=True)
-    # df_mona = df_mona.reset_index(drop=True) # MoNA는 모두 훈련용
+    # Helper to get first block
+    def get_inchikey_block1(smiles):
+        try:
+            mol = Chem.MolFromSmiles(smiles)
+            if mol:
+                key = Chem.MolToInchiKey(mol)
+                return key.split('-')[0] # Connectivity layer only
+        except:
+            return None
+        return None
 
+    # Apply to unique SMILES only (faster)
+    unique_smiles = pd.DataFrame(df_massbank['smiles'].unique(), columns=['smiles'])
+    tqdm.pandas(desc="Calculating InChIKeys")
+    unique_smiles['inchikey_1'] = unique_smiles['smiles'].progress_apply(get_inchikey_block1)
+    
+    # Remove failed conversions
+    unique_smiles = unique_smiles.dropna()
+    
+    # Split based on Unique InChIKey Blocks (Connectivity)
+    unique_blocks = unique_smiles['inchikey_1'].unique()
+    np.random.seed(config.RANDOM_SEED)
+    np.random.shuffle(unique_blocks)
+    
+    split_idx = int(len(unique_blocks) * config.TRAIN_TEST_SPLIT_RATIO)
+    train_blocks = set(unique_blocks[:split_idx])
+    test_blocks = set(unique_blocks[split_idx:])
+    
+    # Map back to SMILES
+    train_smiles = set(unique_smiles[unique_smiles['inchikey_1'].isin(train_blocks)]['smiles'])
+    test_smiles = set(unique_smiles[unique_smiles['inchikey_1'].isin(test_blocks)]['smiles'])
+    
+    # Create DataFrames
+    train_massbank_df = df_massbank[df_massbank['smiles'].isin(train_smiles)].reset_index(drop=True)
+    test_massbank_df = df_massbank[df_massbank['smiles'].isin(test_smiles)].reset_index(drop=True)
+    df_mona = df_mona.reset_index(drop=True)
+
+    print(f"  MassBank Train (Connectivity): {len(train_blocks)} blocks -> {len(train_massbank_df)} spectra")
+    print(f"  MassBank Test (Connectivity): {len(test_blocks)} blocks -> {len(test_massbank_df)} spectra")
+    
     tokenizer = get_tokenizer()
     
     train_dataset_massbank = MassBankDataset(train_massbank_df, tokenizer, is_train=True)
@@ -152,7 +175,7 @@ def prepare_dataloaders():
     print(f"Total Train Spectra (Combined): {len(train_dataset):,}")
     print(f"Total Test Spectra (MassBank ZSR): {len(test_dataset):,}")
     print("-" * 80)
-    print("NOTE: Training *without* WeightedRandomSampler first.")
+    # print("NOTE: Training *without* WeightedRandomSampler first.")
     print("-" * 80)
     
     train_loader = DataLoader(

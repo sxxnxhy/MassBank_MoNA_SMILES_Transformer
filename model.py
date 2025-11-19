@@ -9,44 +9,81 @@ from transformers import AutoModel
 import config
 import numpy as np
 from peft import get_peft_model, LoraConfig, TaskType
+import math
 
+class GaussianFourierProjection(nn.Module):
+    """
+    Projects scalar m/z values into high-dimensional space using 
+    random Gaussian frequencies (Tancik et al., NeurIPS 2020).
+    This enables the MLP to learn high-frequency functions (fine mass differences).
+    """
+    def __init__(self, embed_dim, scale=30.0):
+        super().__init__()
+        # Random B matrix (fixed, not learnable)
+        # scale controls the frequency spectrum. Higher scale = higher freq sensitivity.
+        self.B = nn.Parameter(torch.randn(1, embed_dim // 2) * scale, requires_grad=False)
+
+    def forward(self, x):
+        # x: [Batch, Seq, 1]
+        # x_proj: [Batch, Seq, embed_dim/2]
+        x_proj = (2 * np.pi * x) @ self.B 
+        # cat: [Batch, Seq, embed_dim]
+        return torch.cat([torch.sin(x_proj), torch.cos(x_proj)], dim=-1)
 
 class MSEncoder(nn.Module):
     """
-    (NEW "Path A" Encoder)
-    Transformer Encoder for variable-length (m/z, int) peak sequences.
+    Physics-Informed Transformer.
+    Input: (m/z, intensity) pairs.
+    Architecture:
+      1. m/z -> Fourier Projection -> MLP
+      2. intensity -> MLP
+      3. Concat([mz_emb, int_emb]) -> Fusion -> Transformer
     """
     def __init__(self, encoder_config, embedding_dim):
         super().__init__()
         
         d_model = encoder_config['d_model']
+        fourier_dim = encoder_config['fourier_dim']
         
-        # --- 1. Peak Embedding ---
-        # (m/z, int) 2D 입력을 d_model (768) 차원으로 임베딩
-        self.peak_embed = nn.Linear(2, d_model)
+        # --- 1. m/z Pathway (Where?) ---
+        self.mz_fourier = GaussianFourierProjection(fourier_dim, scale=30.0)
+        self.mz_mlp = nn.Sequential(
+            nn.Linear(fourier_dim, d_model),
+            nn.GELU(),
+            nn.Linear(d_model, d_model)
+        )
         
-        # --- 2. Positional Embedding ---
-        # [CLS] 토큰 1개 + 최대 피크(MAX_PEAK_SEQ_LEN)
-        seq_len = config.MAX_PEAK_SEQ_LEN
+        # --- 2. Intensity Pathway (How much?) ---
+        self.int_mlp = nn.Sequential(
+            nn.Linear(1, d_model),
+            nn.GELU(),
+            nn.Linear(d_model, d_model)
+        )
+        
+        # --- 3. Fusion Layer (Concatenation Strategy) ---
+        # Takes [mz_emb; int_emb] -> Fuses to [d_model]
+        self.fusion = nn.Sequential(
+            nn.Linear(d_model * 2, d_model),
+            nn.LayerNorm(d_model)
+        )
+        
+        # --- 4. Transformer ---
         self.cls_token = nn.Parameter(torch.zeros(1, 1, d_model))
-        self.pos_embedding = nn.Parameter(torch.zeros(1, seq_len + 1, d_model))
-
-        # --- 3. Transformer Encoder ---
+        
         transformer_layer = nn.TransformerEncoderLayer(
             d_model=d_model,
             nhead=encoder_config['nhead'],
             dim_feedforward=d_model * 4,
             dropout=encoder_config['dropout'],
-            batch_first=True # (Batch, SeqLen, Channels)
+            batch_first=True,
+            norm_first=True
         )
         self.transformer_encoder = nn.TransformerEncoder(
             transformer_layer,
             num_layers=encoder_config['n_layers']
         )
         
-        # --- 4. Projection Head ---
-        # (d_model -> embedding_dim)
-        # config에서 d_model과 embedding_dim을 768로 통일했음
+        # --- 5. Projection ---
         self.projection = nn.Sequential(
             nn.Linear(d_model, embedding_dim * 2),
             nn.LayerNorm(embedding_dim * 2),
@@ -56,42 +93,39 @@ class MSEncoder(nn.Module):
         )
         
     def forward(self, x, mask):
-        # x: [N, 700, 2] (정규화된 peak_sequence)
-        # mask: [N, 700] (bool 마스크, True=실제 피크)
+        # x: [B, S, 2] -> (log_mz, sqrt_int)
+        mz_val = x[:, :, 0:1]
+        int_val = x[:, :, 1:2]
         
-        # 1. Peak Embedding
-        # (N, 700, 2) -> (N, 700, 768)
-        x = self.peak_embed(x)
+        # 1. Encode m/z (Fourier -> MLP)
+        mz_emb = self.mz_fourier(mz_val) # [B, S, fourier_dim]
+        mz_emb = self.mz_mlp(mz_emb)     # [B, S, d_model]
         
-        # 2. [CLS] 토큰 추가
+        # 2. Encode intensity (MLP)
+        int_emb = self.int_mlp(int_val)  # [B, S, d_model]
+        
+        # 3. Concatenate & Fuse (FIX 4)
+        # Explicitly separate location and magnitude information
+        cat_feat = torch.cat([mz_emb, int_emb], dim=-1) # [B, S, 2*d]
+        x_emb = self.fusion(cat_feat) # [B, S, d]
+        
+        # 4. Append CLS
         batch_size = x.shape[0]
-        cls_tokens = self.cls_token.expand(batch_size, -1, -1) # [N, 1, 768]
-        x = torch.cat((cls_tokens, x), dim=1) # [N, 701, 768]
+        cls_tokens = self.cls_token.expand(batch_size, -1, -1)
+        x_emb = torch.cat((cls_tokens, x_emb), dim=1)
         
-        # 3. 위치 임베딩 추가
-        x = x + self.pos_embedding
+        # 5. Masking
+        cls_mask = torch.ones(batch_size, 1, dtype=torch.bool, device=x.device)
+        full_mask = torch.cat((cls_mask, mask), dim=1)
+        transformer_mask = ~full_mask
         
-        # 4. 트랜스포머용 최종 마스크 생성
-        # [CLS] 토큰은 항상 유효(True)
-        cls_mask = torch.ones(batch_size, 1, dtype=torch.bool, device=x.device) # [N, 1]
-        full_mask = torch.cat((cls_mask, mask), dim=1) # [N, 701]
+        # 6. Transformer
+        out = self.transformer_encoder(x_emb, src_key_padding_mask=transformer_mask)
         
-        # [중요] TransformerEncoder는 "True"를 패딩(무시)으로 간주함.
-        # 우리의 마스크(True=유효)와 반대이므로, 마스크를 반전(~).
-        transformer_mask = ~full_mask # [N, 701]
-        
-        # 5. 트랜스포머 인코더 실행
-        x = self.transformer_encoder(x, src_key_padding_mask=transformer_mask)
-        
-        # 6. [CLS] 토큰의 출력만 사용
-        cls_output = x[:, 0, :] # [N, 768]
-        
-        # 7. Projection
-        x = self.projection(cls_output)
-        
-        # 8. L2 정규화
-        x = F.normalize(x, p=2, dim=1)
-        return x
+        # 7. Output
+        cls_output = out[:, 0, :]
+        projected = self.projection(cls_output)
+        return F.normalize(projected, p=2, dim=1)
 
 class TextEncoder(nn.Module):
     """

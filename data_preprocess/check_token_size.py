@@ -29,7 +29,7 @@ def tokenize_and_check(text, tokenizer, max_len):
 # --- 2. 메인 분석 함수 ---
 def run_truncation_check():
     
-    max_length = 128 # 256
+    max_length = 369 # 256
     tokenizer = AutoTokenizer.from_pretrained(
             config.TEXT_ENCODER['model_name'],
             do_lower_case=False
@@ -37,7 +37,7 @@ def run_truncation_check():
 
     # 데이터 로딩 (전체 데이터셋 필요)
     # df = pd.read_parquet('mona_30peaks_1064635.parquet')
-    df = pd.read_parquet('massbank_30peaks_98675.parquet')
+    df = pd.read_parquet('massbank_300peaks.parquet')
     print(f"Checking {len(df)} records for token length...")
 
     # 동적 프롬프트 생성 및 길이 확인

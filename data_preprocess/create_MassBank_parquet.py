@@ -11,7 +11,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 
 # --- [수정] 피크 개수 상/하한선 설정 (1 ~ 30개) ---
 MIN_PEAK_COUNT = 1   
-MAX_PEAK_COUNT = 30 
+MAX_PEAK_COUNT = 300
 # --- [END 수정] ---
 
 def parse_record(file_path, domain_name):
@@ -79,7 +79,7 @@ def parse_record(file_path, domain_name):
     }
 
 def main():
-    root_dir = Path("./data") # 경로 확인 필요
+    root_dir = Path("../data") # 경로 확인 필요
     if not root_dir.exists():
         logging.error(f"Error: Directory not found: {root_dir}")
         return
@@ -109,7 +109,7 @@ def main():
         return
 
     df = pd.DataFrame(all_records)
-    output_file = "massbank_preprocessed.parquet" # 저장 경로 확인 필요
+    output_file = "massbank_300peaks.parquet" # 저장 경로 확인 필요
     try:
         df.to_parquet(output_file, index=False) 
         logging.info(f"\n✅ Preprocessing complete! Data saved to: {output_file}")

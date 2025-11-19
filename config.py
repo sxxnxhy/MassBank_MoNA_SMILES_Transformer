@@ -4,21 +4,25 @@ Configuration for MassBank Zero-Shot Retrieval (ZSR)
 """
 
 # --- Data Source ---
-MASSBANK_FILE = "./data_preprocess/massbank_30peaks_98675.parquet"
+MASSBANK_FILE = "./data_preprocess/massbank_300peaks.parquet"
+# MASSBANK_FILE = "./data_preprocess/massbank_num_peak_limit_30.parquet"
+
 MONA_FILE = "./data_preprocess/mona_30peaks_1064635.parquet"
 
 # --- Zero-Shot Setup ---
 TRAIN_TEST_SPLIT_RATIO = 0.8  
 RANDOM_SEED = 42
 
-# (이전 로그 99백분위수 655, 필터 1000을 기준으로 설정)
-MAX_PEAK_SEQ_LEN = 30    # 스펙트럼 당 최대 피크 (토큰) 시퀀스 길이
+MAX_PEAK_SEQ_LEN = 300    # 스펙트럼 당 최대 피크 (토큰) 시퀀스 길이
 
 # --- Model Architecture ---
 EMBEDDING_DIM = 768       # 공유 임베딩 차원 (BERT와 일치)
 
 # --- (NEW) MS Encoder (Transformer-on-Peaks) ---
 MS_ENCODER = {
+    # Gaussian Fourier Projection Dimension (Internal)
+    # This projects scalar m/z -> vector of size 'fourier_dim'
+    'fourier_dim': 256,
     # (m/z, intensity) 2D 입력을 d_model로 임베딩
     'd_model': EMBEDDING_DIM, 
     'nhead': 8,           # (d_model % nhead == 0)
@@ -32,7 +36,7 @@ TEMPERATURE = 0.07
 # Text Encoder (ChemBERTa)
 TEXT_ENCODER = {
     'model_name': 'seyonec/PubChem10M_SMILES_BPE_450k',
-    'max_length': 369,  
+    'max_length': 365,  
     'freeze_bert': False
 }
 
@@ -44,7 +48,7 @@ LORA = {
 }
 
 # Training
-BATCH_SIZE = 256
+BATCH_SIZE = 128
 NUM_EPOCHS = 500 
 WEIGHT_DECAY = 1e-2 
 
