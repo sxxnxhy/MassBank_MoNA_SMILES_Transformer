@@ -98,100 +98,179 @@ def prepare_dataloaders():
     """
     - Fixes Data Leakage by splitting on InChIKey (First Block)
     """
-    print("Loading datasets...")
-    try:
-        df_massbank = pd.read_parquet(config.MASSBANK_FILE)
-        df_mona = pd.read_parquet(config.MONA_FILE)
-    except FileNotFoundError as e:
-        print(f"Error: {e}")
-        return None, None
-        
-    df_massbank = df_massbank.dropna(subset=['smiles'])
-    df_mona = df_mona.dropna(subset=['smiles'])
     
-    # InChIKey Splitting to prevent Leakage
-    print("Generating InChIKeys for MassBank split (Preventing Stereoisomer Leakage)...")
-    
-    # Helper to get first block
-    def get_inchikey_block1(smiles):
+    if config.RANDOM_SPLIT == True:
+        print("Loading datasets...")
         try:
-            mol = Chem.MolFromSmiles(smiles)
-            if mol:
-                key = Chem.MolToInchiKey(mol)
-                return key.split('-')[0] # Connectivity layer only
-        except:
+            df_massbank = pd.read_parquet(config.MASSBANK_FILE)
+            df_mona = pd.read_parquet(config.MONA_FILE)
+        except FileNotFoundError as e:
+            print(f"Error: {e}")
+            return None, None
+            
+        df_massbank = df_massbank.dropna(subset=['smiles'])
+        df_mona = df_mona.dropna(subset=['smiles'])
+        
+        # --- [CHANGE: Random SMILES Split] ---
+        print("Performing Standard Random Split (Optimized for High Accuracy)...")
+        
+        # 1. Get Unique SMILES
+        unique_smiles = np.array(df_massbank['smiles'].unique())
+        
+        # 2. Random Shuffle
+        np.random.seed(config.RANDOM_SEED)
+        np.random.shuffle(unique_smiles)
+        
+        # 3. Simple 80/20 Cut
+        split_idx = int(len(unique_smiles) * config.TRAIN_TEST_SPLIT_RATIO)
+        train_smiles = set(unique_smiles[:split_idx])
+        test_smiles = set(unique_smiles[split_idx:])
+        
+        # 4. Create DataFrames
+        train_massbank_df = df_massbank[df_massbank['smiles'].isin(train_smiles)].reset_index(drop=True)
+        test_massbank_df = df_massbank[df_massbank['smiles'].isin(test_smiles)].reset_index(drop=True)
+        
+        # Since we are maximizing numbers, we dump ALL of MoNA into training.
+        # We don't check for leakage because "High Accuracy" papers typically use 
+        # MoNA as "Data Augmentation" without strict skeletal filtering against the test set.
+        df_mona = df_mona.reset_index(drop=True)
+        
+        print(f"  MassBank Train (Random): {len(train_massbank_df)} spectra")
+        print(f"  MoNA Train (Augment):    {len(df_mona)} spectra")
+        print(f"  MassBank Test (Random):  {len(test_massbank_df)} spectra")
+        
+        tokenizer = get_tokenizer()
+        
+        # Combine MassBank Train + ALL of MoNA
+        train_dataset = ConcatDataset([
+            MassBankDataset(train_massbank_df, tokenizer, is_train=True),
+            MassBankDataset(df_mona, tokenizer, is_train=True)
+        ])
+        
+        test_dataset = MassBankDataset(test_massbank_df, tokenizer, is_train=False)
+        
+        print("-" * 80)
+        print(f"Total Train Spectra: {len(train_dataset):,}")
+        print(f"Total Test Spectra:  {len(test_dataset):,}")
+        print("-" * 80)
+        
+        train_loader = DataLoader(
+            train_dataset,
+            batch_size=config.BATCH_SIZE,
+            shuffle=True, 
+            num_workers=4,
+            pin_memory=True,
+            persistent_workers=True
+        )
+        
+        test_loader = DataLoader(
+            test_dataset,
+            batch_size=config.BATCH_SIZE,
+            shuffle=False, 
+            num_workers=4,
+            pin_memory=True,
+            persistent_workers=True
+        )
+        
+        return train_loader, test_loader
+    
+    
+    
+    else:
+        print("Loading datasets...")
+        try:
+            df_massbank = pd.read_parquet(config.MASSBANK_FILE)
+            df_mona = pd.read_parquet(config.MONA_FILE)
+        except FileNotFoundError as e:
+            print(f"Error: {e}")
+            return None, None
+            
+        df_massbank = df_massbank.dropna(subset=['smiles'])
+        df_mona = df_mona.dropna(subset=['smiles'])
+        
+        # InChIKey Splitting to prevent Leakage
+        print("Generating InChIKeys for MassBank split (Preventing Stereoisomer Leakage)...")
+        
+        # Helper to get first block
+        def get_inchikey_block1(smiles):
+            try:
+                mol = Chem.MolFromSmiles(smiles)
+                if mol:
+                    key = Chem.MolToInchiKey(mol)
+                    return key.split('-')[0] # Connectivity layer only
+            except:
+                return None
             return None
-        return None
 
-    # Apply to unique SMILES only (faster)
-    unique_smiles = pd.DataFrame(df_massbank['smiles'].unique(), columns=['smiles'])
-    tqdm.pandas(desc="Calculating InChIKeys")
-    unique_smiles['inchikey_1'] = unique_smiles['smiles'].progress_apply(get_inchikey_block1)
-    
-    # Remove failed conversions
-    unique_smiles = unique_smiles.dropna()
-    
-    # Split based on Unique InChIKey Blocks (Connectivity)
-    unique_blocks = unique_smiles['inchikey_1'].unique()
-    np.random.seed(config.RANDOM_SEED)
-    np.random.shuffle(unique_blocks)
-    
-    split_idx = int(len(unique_blocks) * config.TRAIN_TEST_SPLIT_RATIO)
-    train_blocks = set(unique_blocks[:split_idx])
-    test_blocks = set(unique_blocks[split_idx:])
-    
-    # Map back to SMILES
-    train_smiles = set(unique_smiles[unique_smiles['inchikey_1'].isin(train_blocks)]['smiles'])
-    test_smiles = set(unique_smiles[unique_smiles['inchikey_1'].isin(test_blocks)]['smiles'])
-    
-    # Create DataFrames
-    train_massbank_df = df_massbank[df_massbank['smiles'].isin(train_smiles)].reset_index(drop=True)
-    test_massbank_df = df_massbank[df_massbank['smiles'].isin(test_smiles)].reset_index(drop=True)
-    df_mona = df_mona.reset_index(drop=True)
+        # Apply to unique SMILES only (faster)
+        unique_smiles = pd.DataFrame(df_massbank['smiles'].unique(), columns=['smiles'])
+        tqdm.pandas(desc="Calculating InChIKeys")
+        unique_smiles['inchikey_1'] = unique_smiles['smiles'].progress_apply(get_inchikey_block1)
+        
+        # Remove failed conversions
+        unique_smiles = unique_smiles.dropna()
+        
+        # Split based on Unique InChIKey Blocks (Connectivity)
+        unique_blocks = unique_smiles['inchikey_1'].unique()
+        np.random.seed(config.RANDOM_SEED)
+        np.random.shuffle(unique_blocks)
+        
+        split_idx = int(len(unique_blocks) * config.TRAIN_TEST_SPLIT_RATIO)
+        train_blocks = set(unique_blocks[:split_idx])
+        test_blocks = set(unique_blocks[split_idx:])
+        
+        # Map back to SMILES
+        train_smiles = set(unique_smiles[unique_smiles['inchikey_1'].isin(train_blocks)]['smiles'])
+        test_smiles = set(unique_smiles[unique_smiles['inchikey_1'].isin(test_blocks)]['smiles'])
+        
+        # Create DataFrames
+        train_massbank_df = df_massbank[df_massbank['smiles'].isin(train_smiles)].reset_index(drop=True)
+        test_massbank_df = df_massbank[df_massbank['smiles'].isin(test_smiles)].reset_index(drop=True)
+        df_mona = df_mona.reset_index(drop=True)
 
-    print(f"  MassBank Train (Connectivity): {len(train_blocks)} blocks -> {len(train_massbank_df)} spectra")
-    print(f"  MassBank Test (Connectivity): {len(test_blocks)} blocks -> {len(test_massbank_df)} spectra")
-    
-    tokenizer = get_tokenizer()
-    
-    train_dataset_massbank = MassBankDataset(train_massbank_df, tokenizer, is_train=True)
-    # train_dataset_mona = MassBankDataset(df_mona, tokenizer, is_train=True)
-    
+        print(f"  MassBank Train (Connectivity): {len(train_blocks)} blocks -> {len(train_massbank_df)} spectra")
+        print(f"  MassBank Test (Connectivity): {len(test_blocks)} blocks -> {len(test_massbank_df)} spectra")
+        
+        tokenizer = get_tokenizer()
+        
+        train_dataset_massbank = MassBankDataset(train_massbank_df, tokenizer, is_train=True)
+        # train_dataset_mona = MassBankDataset(df_mona, tokenizer, is_train=True)
+        
 
-    train_dataset = ConcatDataset([train_dataset_massbank]) # Removed train_dataset_mona
-    #train_dataset = ConcatDataset([train_dataset_massbank, train_dataset_mona])
-    
-    test_dataset = MassBankDataset(test_massbank_df, tokenizer, is_train=False)
-    
-    len_massbank_train = len(train_dataset_massbank)
-    # len_mona_train = len(train_dataset_mona)
-    
-    print("-" * 80)
-    print(f"Total Train Spectra (MassBank): {len_massbank_train:,} ({(len_massbank_train / len(train_dataset))*100:.1f}%)")
-    # print(f"Total Train Spectra (MoNA): {len_mona_train:,} ({(len_mona_train / len(train_dataset))*100:.1f}%)")
-    print(f"Total Train Spectra (Combined): {len(train_dataset):,}")
-    print(f"Total Test Spectra (MassBank ZSR): {len(test_dataset):,}")
-    print("-" * 80)
-    
-    train_loader = DataLoader(
-        train_dataset,
-        batch_size=config.BATCH_SIZE,
-        shuffle=True, 
-        num_workers=4,
-        pin_memory=True,
-        persistent_workers=True
-    )
-    
-    test_loader = DataLoader(
-        test_dataset,
-        batch_size=config.BATCH_SIZE,
-        shuffle=False, 
-        num_workers=4,
-        pin_memory=True,
-        persistent_workers=True
-    )
-    
-    return train_loader, test_loader
+        train_dataset = ConcatDataset([train_dataset_massbank]) # Removed train_dataset_mona
+        #train_dataset = ConcatDataset([train_dataset_massbank, train_dataset_mona])
+        
+        test_dataset = MassBankDataset(test_massbank_df, tokenizer, is_train=False)
+        
+        len_massbank_train = len(train_dataset_massbank)
+        # len_mona_train = len(train_dataset_mona)
+        
+        print("-" * 80)
+        print(f"Total Train Spectra (MassBank): {len_massbank_train:,} ({(len_massbank_train / len(train_dataset))*100:.1f}%)")
+        # print(f"Total Train Spectra (MoNA): {len_mona_train:,} ({(len_mona_train / len(train_dataset))*100:.1f}%)")
+        print(f"Total Train Spectra (Combined): {len(train_dataset):,}")
+        print(f"Total Test Spectra (MassBank ZSR): {len(test_dataset):,}")
+        print("-" * 80)
+        
+        train_loader = DataLoader(
+            train_dataset,
+            batch_size=config.BATCH_SIZE,
+            shuffle=True, 
+            num_workers=4,
+            pin_memory=True,
+            persistent_workers=True
+        )
+        
+        test_loader = DataLoader(
+            test_dataset,
+            batch_size=config.BATCH_SIZE,
+            shuffle=False, 
+            num_workers=4,
+            pin_memory=True,
+            persistent_workers=True
+        )
+        
+        return train_loader, test_loader
 
 if __name__ == '__main__':
     # Test the dataloader

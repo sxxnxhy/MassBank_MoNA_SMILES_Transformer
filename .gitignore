@@ -1,5 +1,9 @@
 data
 models_massbank_v4_PeakTransformer/
 logs_massbank_v4_PeakTransformer/
+models_massbank_v4_PeakTransformer_mona_added/
+logs_massbank_v4_PeakTransformer_mona_added/
+models_massbank_baseline/
+logs_massbank_baseline/
 __pycache__/
-data_preproces/*.parquet
+data_preprocess/*.parquet

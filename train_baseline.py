@@ -17,7 +17,7 @@ import warnings
 
 import config
 from dataset import prepare_dataloaders
-from model import CLIPModel 
+from model_baseline import BaselineCLIPModel
 
 # Suppress non-critical warnings
 logging.getLogger("transformers").setLevel(logging.ERROR)
@@ -122,7 +122,7 @@ def main():
     print(f"Train batches: {len(train_loader)}, Test (ZSR) batches: {len(val_loader)}")
     
     print("\nCreating model.")
-    model = CLIPModel().to(device)
+    model = BaselineCLIPModel().to(device)
     
     # Print LoRA parameters to confirm they are active
     model.text_encoder.bert.print_trainable_parameters()
