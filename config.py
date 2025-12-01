@@ -3,25 +3,25 @@
 MASSBANK_FILE = "./data_preprocess/massbank_300peaks.parquet"
 # MASSBANK_FILE = "./data_preprocess/massbank_num_peak_limit_30.parquet"
 
-MONA_FILE = "./data_preprocess/mona_300peaks_duplicates_filtered.parquet"
+MONA_FILE = "./data_preprocess/mona_30peaks_1064635.parquet"
 
 
 
 # ------------------------------------------------------------------------------
-# # Logging
-# CHECKPOINT_DIR = './models_massbank_v4_PeakTransformer'
-# LOG_DIR = './logs_massbank_v4_PeakTransformer'
-# RANDOM_SPLIT = False
-# # Device
-# DEVICE = 'cuda:0'
-# ------------------------------------------------------------------------------
-# MoNA 추가 버전 설정 
 # Logging
-CHECKPOINT_DIR = './models_massbank_v4_PeakTransformer_mona_added'
-LOG_DIR = './logs_massbank_v4_PeakTransformer_mona_added'
-RANDOM_SPLIT = True
+CHECKPOINT_DIR = './models_massbank_v4_PeakTransformer'
+LOG_DIR = './logs_massbank_v4_PeakTransformer'
+RANDOM_SPLIT = False
 # Device
 DEVICE = 'cuda:0'
+# ------------------------------------------------------------------------------
+# # MoNA 추가 버전 설정 
+# # Logging
+# CHECKPOINT_DIR = './models_massbank_v4_PeakTransformer_mona_added'
+# LOG_DIR = './logs_massbank_v4_PeakTransformer_mona_added'
+# RANDOM_SPLIT = True
+# # Device
+# DEVICE = 'cuda:0'
 # ------------------------------------------------------------------------------
 # # baseline 설정
 # # Logging

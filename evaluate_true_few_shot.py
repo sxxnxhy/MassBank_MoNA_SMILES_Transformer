@@ -8,23 +8,23 @@ from model import CLIPModel
 import torch.nn.functional as F
 
 # --- [설정] ----------------------
-K_SHOT_LIST = [1, 3, 5, 10]  # 테스트할 샷 수 (1장, 3장, 5장, 10장 줬을 때 성능 변화)
+K_SHOT_LIST = [1, 3, 5, 10]  # 힌트 개수
+K_CANDIDATES = 256           # 경쟁자 수 (정답 1 + 오답 255)
 # ---------------------------------
 
 @torch.no_grad()
-def evaluate_few_shot_retrieval_scan(model, dataloader, device, k_shots=[1, 5]):
+def evaluate_few_shot_benchmark(model, dataloader, device, k_shots=[1, 5], k_candidates=256):
     model.eval()
     print(f"\n" + "="*60)
-    print(f"🔎 Running Few-Shot Retrieval Benchmark (K={k_shots})")
-    print("Logic: Average K spectra -> Retrieve correct SMILES from FULL database")
+    print(f"🔬 Running Few-Shot Benchmark Evaluation")
+    print(f"   - Condition: {k_candidates} Candidates (1 True + {k_candidates-1} Decoys)")
+    print(f"   - Logic: Average K spectra -> Rank against {k_candidates} candidates")
     print("="*60)
 
     # 1. 데이터 인코딩 및 그룹핑
     print("Encoding test set and grouping by SMILES...")
     
-    # Key: SMILES string, Value: List of Spectrum Embeddings
     mol_to_specs = defaultdict(list)
-    # Key: SMILES string, Value: Text Embedding (1개만 있으면 됨)
     mol_to_text_emb = {}
     
     # 배치 단위로 처리
@@ -34,8 +34,7 @@ def evaluate_few_shot_retrieval_scan(model, dataloader, device, k_shots=[1, 5]):
         input_ids = batch['input_ids'].to(device)
         attention_mask = batch['attention_mask'].to(device)
         
-        # 텍스트 디코딩 (그룹핑 키로 사용)
-        # 주의: 실제 dataset.py에 get_tokenizer가 있어야 함. 없으면 config에서 로드.
+        # 텍스트 디코딩
         from transformers import AutoTokenizer
         tokenizer = AutoTokenizer.from_pretrained(config.TEXT_ENCODER['model_name'])
         smiles_list = tokenizer.batch_decode(input_ids, skip_special_tokens=True)
@@ -49,89 +48,87 @@ def evaluate_few_shot_retrieval_scan(model, dataloader, device, k_shots=[1, 5]):
         text_emb = text_emb.cpu()
         
         for i, smile in enumerate(smiles_list):
-            # 공백 제거 (토크나이저 디코딩 시 생길 수 있는 공백 처리)
-            smile_key = smile.replace(" ", "") 
-            
+            smile_key = smile.replace(" ", "") # 공백 제거
             mol_to_specs[smile_key].append(spec_emb[i])
             if smile_key not in mol_to_text_emb:
                 mol_to_text_emb[smile_key] = text_emb[i]
 
-    # 2. 검색 대상(Candidate Pool) 구축
-    # 전체 유니크한 SMILES들의 텍스트 임베딩 행렬
+    # 2. 전체 후보군(Candidate Pool) 구축
     unique_smiles = list(mol_to_text_emb.keys())
-    candidate_embeddings = torch.stack([mol_to_text_emb[s] for s in unique_smiles]) # [N_unique, Dim]
-    candidate_embeddings = F.normalize(candidate_embeddings, p=2, dim=1) # 정규화
+    candidate_embeddings = torch.stack([mol_to_text_emb[s] for s in unique_smiles]) # [N_total, Dim]
+    candidate_embeddings = F.normalize(candidate_embeddings, p=2, dim=1)
     
-    print(f"\nCandidate Pool Size (Unique Molecules): {len(unique_smiles)}")
+    print(f"\nTotal Unique Molecules in DB: {len(unique_smiles)}")
     
     # 3. K-Shot 별 성능 측정
     for k in k_shots:
-        print(f"\n--- Testing {k}-Shot Retrieval ---")
+        print(f"\n--- Testing {k}-Shot Retrieval (vs {k_candidates} candidates) ---")
         
         r1_hits = 0
-        r5_hits = 0
-        r10_hits = 0
         total_queries = 0
         
-        # 각 분자마다 루프
-        for target_smile in tqdm(unique_smiles, desc=f"Retrieving (K={k})"):
+        # 랜덤 시드 고정 (재현성 위해)
+        torch.manual_seed(config.RANDOM_SEED)
+        
+        for target_idx, target_smile in enumerate(tqdm(unique_smiles, desc=f"Evaluating (K={k})")):
             specs = mol_to_specs[target_smile]
             
-            # 스펙트럼 개수가 K개 미만이면 테스트 불가 (스킵)
+            # 스펙트럼이 K개 미만이면 스킵
             if len(specs) < k:
                 continue
                 
-            # K개 랜덤 샘플링 (비복원) -> 평균 벡터 생성
-            # 실험의 안정성을 위해, 가능한 경우 여러 번 샘플링해서 평균낼 수도 있지만
-            # 여기서는 1번만 수행 (Standard Protocol)
+            # [Step A] 힌트 생성 (K개 평균)
             indices = np.random.choice(len(specs), k, replace=False)
-            selected_specs = torch.stack([specs[i] for i in indices]) # [K, Dim]
-            
-            # [핵심] Mean Pooling (벡터 평균)
-            query_vec = torch.mean(selected_specs, dim=0, keepdim=True) # [1, Dim]
+            selected_specs = torch.stack([specs[i] for i in indices])
+            query_vec = torch.mean(selected_specs, dim=0, keepdim=True)
             query_vec = F.normalize(query_vec, p=2, dim=1)
             
-            # 유사도 계산 (1 vs N)
-            sim_scores = torch.matmul(query_vec, candidate_embeddings.T).squeeze() # [N_unique]
+            # [Step B] 전체 유사도 계산 (1 vs 4917)
+            # 일단 전체랑 다 계산하고 나서, 나중에 256개만 추려내는 게 구현이 편함
+            sim_scores = torch.matmul(query_vec, candidate_embeddings.T).squeeze() # [N_total]
             
-            # 랭킹 계산
-            # 정답 인덱스 찾기
-            target_idx = unique_smiles.index(target_smile)
-            
-            # 내림차순 정렬 후 정답 등수 확인
-            # (argsort는 오름차순이므로 뒤집거나, '보다 큰 값의 개수'를 셈)
+            # [Step C] 256개 후보군 구성 (Subsampling)
+            # 1. 정답 점수 확보
             score_target = sim_scores[target_idx]
-            rank = (sim_scores > score_target).sum().item() + 1
             
-            if rank == 1: r1_hits += 1
-            if rank <= 5: r5_hits += 1
-            if rank <= 10: r10_hits += 1
+            # 2. 오답 점수들만 모으기 (자신 제외)
+            # 마스킹으로 자기 자신(target_idx)을 뺀 나머지 점수만 가져옴
+            mask = torch.ones_like(sim_scores, dtype=torch.bool)
+            mask[target_idx] = False
+            negative_scores = sim_scores[mask]
+            
+            # 3. 랜덤으로 255개 오답 뽑기
+            n_neg = min(len(negative_scores), k_candidates - 1)
+            perm = torch.randperm(len(negative_scores))[:n_neg]
+            sampled_negatives = negative_scores[perm]
+            
+            # [Step D] 랭킹 확인 (1 vs 256)
+            # 내 점수가 뽑힌 오답들(255개) 중 가장 높은 점수보다 크면 1등
+            if score_target > sampled_negatives.max():
+                r1_hits += 1
+                
             total_queries += 1
             
         # 결과 출력
-        if total_queries == 0:
-            print("  Warning: No molecules had enough spectra for this K.")
-        else:
+        if total_queries > 0:
             print(f"  Samples evaluated: {total_queries}")
-            print(f"  R@1 : {r1_hits/total_queries*100:.2f}%")
-            print(f"  R@5 : {r5_hits/total_queries*100:.2f}%")
-            print(f"  R@10: {r10_hits/total_queries*100:.2f}%")
+            print(f"  Benchmark R@1 : {r1_hits/total_queries*100:.2f}%")
+        else:
+            print("  No samples with enough spectra.")
 
 def main():
     device = torch.device("cuda" if torch.cuda.is_available() else 'cpu')
     print(f"Using Device: {device}")
     
-    # 데이터 로드
     _, test_loader = prepare_dataloaders()
     
-    # 모델 로드
     model = CLIPModel().to(device)
     checkpoint = torch.load(f"{config.CHECKPOINT_DIR}/best_model.pt", map_location=device)
     model.load_state_dict(checkpoint['model_state_dict'])
     print(f"Loaded model (Epoch {checkpoint['epoch']})")
     
-    # 평가 실행
-    evaluate_few_shot_retrieval_scan(model, test_loader, device, k_shots=K_SHOT_LIST)
+    # 256개 후보군 설정
+    evaluate_few_shot_benchmark(model, test_loader, device, k_shots=K_SHOT_LIST, k_candidates=256)
 
 if __name__ == '__main__':
     main()

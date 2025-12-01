@@ -29,11 +29,6 @@ def evaluate_few_shot_n_way(model, dataloader, device, n_way, k_shot, n_query, n
         peak_sequence = batch['peak_sequence'].to(device).float()
         peak_mask = batch['peak_mask'].to(device)
         
-        # 텍스트(SMILES)는 배치에서 바로 문자열로 가져오기 위해 tokenizer decode 사용 권장
-        # (여기서는 input_ids를 통해 복원하거나, dataset에서 raw text를 가져오는 방식 사용)
-        # 하지만 편의상 input_ids가 같은지 비교하는 대신,
-        # dataset이 SMILES를 제공한다고 가정하고 진행하거나
-        # 단순히 같은 SMILES끼리 묶는 로직을 사용.
         
         # 스펙트럼 임베딩 추출
         with torch.cuda.amp.autocast():
@@ -125,7 +120,7 @@ def evaluate_few_shot_n_way(model, dataloader, device, n_way, k_shot, n_query, n
     return mean_acc, confidence
 
 def main():
-    device = torch.device("cuda:1" if torch.cuda.is_available() else 'cpu')
+    device = torch.device(config.DEVICE if torch.cuda.is_available() else 'cpu')
     print(f"Using Device: {device}")
     
     # 1. Load Data (Only need Test Loader)

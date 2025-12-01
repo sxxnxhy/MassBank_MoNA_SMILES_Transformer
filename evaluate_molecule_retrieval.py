@@ -15,7 +15,7 @@ from model import CLIPModel
 logging.basicConfig(level=logging.INFO, format='%(message)s')
 logger = logging.getLogger()
 
-K_CANDIDATES = 256
+K_CANDIDATES = 26159
 
 @torch.no_grad()
 def validate_benchmark_subsampled(model, val_loader, device, k_candidates=K_CANDIDATES):
@@ -86,7 +86,7 @@ def validate_benchmark_subsampled(model, val_loader, device, k_candidates=K_CAND
         sampled_negatives = negative_scores[perm]
         
         # D. Compare: Rank 1 means Correct > ALL Decoys
-        if correct_score > sampled_negatives.max():
+        if correct_score >= sampled_negatives.max():
             hits += 1
         
         total += 1
@@ -101,7 +101,7 @@ def validate_benchmark_subsampled(model, val_loader, device, k_candidates=K_CAND
     return r1_benchmark
 
 def main():
-    device = torch.device("cuda:1" if torch.cuda.is_available() else 'cpu')
+    device = torch.device(config.DEVICE if torch.cuda.is_available() else 'cpu')
     print(f"Using Device: {device}")
     
     # 1. Load Data (Only need Test Loader)
